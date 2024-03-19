@@ -1,3 +1,5 @@
 matplotlib
 mlx
 mlx_lm
+torch
+ipython

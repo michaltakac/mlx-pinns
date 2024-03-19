@@ -48,7 +48,9 @@ if os.path.isfile("pinn.safetensors"):
     model.load_weights("pinn.safetensors")
 
 mx.eval(model.parameters())
-optimizer = optim.Adam(learning_rate=1e-1)
+
+lr_schedule = optim.exponential_decay(1e-1, 0.9)
+optimizer = optim.Adam(learning_rate=lr_schedule)
 
 def unet(x,t):
     u = model(x,t)
