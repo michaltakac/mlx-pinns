@@ -1,0 +1,3 @@
+matplotlib
+mlx
+mlx_lm

@@ -33,6 +33,7 @@ class Net(nn.Module):
 
     def __call__(self, x,t):
         inputs = mx.concatenate([x,t],axis=1)
+        print(inputs)
         layer1_out = mx.sigmoid(self.hidden_layer1(inputs))
         layer2_out = mx.sigmoid(self.hidden_layer2(layer1_out))
         layer3_out = mx.sigmoid(self.hidden_layer3(layer2_out))
@@ -42,16 +43,33 @@ class Net(nn.Module):
         return output
     
 ### (2) Model
-net = Net()
-optimizer = optim.Adam(net.trainable_parameters())
+model = Net()
+mx.eval(model.parameters())
+optimizer = optim.Adam(learning_rate=1e-1)
+
+def unet(x,t):
+    u = model(x,t)
+    return u.sum()
 
 ## PDE as loss function. Thus would use the network which we call as u_theta
-def f(x,t, net):
-    u = net(x,t) # the dependent variable u is given by the network based on independent variables x,t
+def pde_loss(x,t):
+    # u = net(x,t) # the dependent variable u is given by the network based on independent variables x,t
     ## Based on our f = du/dx - 2du/dt - u, we need du/dx and du/dt
-    u_x = mx.grad(u.sum, argnames=["x"])
-    u_t = mx.grad(u.sum, argnames=["t"])
+
+    unet_grad_fn = mx.value_and_grad(unet)
+    print("unet_grad_fn",unet_grad_fn)
+    u, grads = unet_grad_fn(x, t)
+
+    print("grads",grads)
+    # u = net(x,t) # the dependent variable u is given by the network based on independent variables x,t
+    print("u", u)
+
+    u_x = grads[0]
+    u_t = grads[1]
+    print(u_x)
+    print(u_t)
     pde = u_x - mx.multiply(2, u_t) - u
+    print(pde)
     return pde
 
 ## Data from Boundary Conditions
@@ -68,14 +86,48 @@ u_bc = 6*np.exp(-3*x_bc)
 ### (3) Training / Fitting
 iterations = 20000
 previous_validation_loss = 99999999.0
+
+def pinn_loss(model, x, t, pred, y):
+    # Loss based on boundary conditions
+    pt_x_bc = mx.array(x_bc)
+    pt_t_bc = mx.array(t_bc)
+    pt_u_bc = mx.array(u_bc)
+    
+    net_bc_out = model(pt_x_bc, pt_t_bc) # output of u(x,t)
+    print("net_bc_out", net_bc_out)
+    mse_u = nn.losses.mse_loss(net_bc_out, pt_u_bc)
+    print("MSE Loss:",mse_u)
+    
+    # Loss based on PDE
+    x_collocation = np.random.uniform(low=0.0, high=2.0, size=(500,1))
+    t_collocation = np.random.uniform(low=0.0, high=1.0, size=(500,1))
+    all_zeros = np.zeros((500,1))
+    
+    pt_x_collocation = mx.array(x_collocation)
+    pt_t_collocation = mx.array(t_collocation)
+    pt_all_zeros = mx.array(all_zeros)
+    print(pt_x_collocation.shape,pt_t_collocation.shape,pt_all_zeros.shape)
+
+    # u = model(pt_x_collocation, pt_t_collocation) # the dependent variable u is given by the network based on independent variables x,t
+    f_out = pde_loss(pt_x_collocation, pt_t_collocation) # output of f(x,t)
+    # loss_and_grad = nn.value_and_grad(mlp, l2_loss)
+    # f_out = f(pt_x_collocation, pt_t_collocation, model) # output of f(x,t)
+    # mse_f = nn.losses.mse_loss(f_out, pt_all_zeros)
+    
+    # Combining the loss functions
+    loss = mse_u# + mse_f
+    return loss
+
 for epoch in range(iterations):
     # Loss based on boundary conditions
     pt_x_bc = mx.array(x_bc)
     pt_t_bc = mx.array(t_bc)
     pt_u_bc = mx.array(u_bc)
     
-    net_bc_out = net(pt_x_bc, pt_t_bc) # output of u(x,t)
+    net_bc_out = model(pt_x_bc, pt_t_bc) # output of u(x,t)
+    print("net_bc_out", net_bc_out)
     mse_u = nn.losses.mse_loss(net_bc_out, pt_u_bc)
+    print("MSE Loss:",mse_u)
     
     # Loss based on PDE
     x_collocation = np.random.uniform(low=0.0, high=2.0, size=(500,1))
@@ -86,19 +138,27 @@ for epoch in range(iterations):
     pt_x_collocation = mx.array(x_collocation)
     pt_t_collocation = mx.array(t_collocation)
     pt_all_zeros = mx.array(all_zeros)
-    
-    f_out = f(pt_x_collocation, pt_t_collocation, net) # output of f(x,t)
-    mse_f = nn.losses.mse_loss(f_out, pt_all_zeros)
+    print(pt_x_collocation.shape,pt_t_collocation.shape,pt_all_zeros.shape)
+
+    # u = model(pt_x_collocation, pt_t_collocation) # the dependent variable u is given by the network based on independent variables x,t
+    f_out = pde_loss(pt_x_collocation, pt_t_collocation) # output of f(x,t)
+    # loss_and_grad = nn.value_and_grad(mlp, l2_loss)
+    # f_out = f(pt_x_collocation, pt_t_collocation, model) # output of f(x,t)
+    # mse_f = nn.losses.mse_loss(f_out, pt_all_zeros)
     
     # Combining the loss functions
-    loss = mse_u + mse_f
-    
-    
-    loss.backward() # This is for computing gradients using backward propagation
-    optimizer.step() # This is equivalent to : theta_new = theta_old - alpha * derivative of J w.r.t theta
+    loss = mse_u# + mse_f
 
-    with mx.autograd.no_grad():
-    	print(epoch,"Traning Loss:",loss.data)
+    loss_and_grad_fn = mx.value_and_grad(model, pde_loss)
+
+    # Update the optimizer state and model parameters
+    # in a single call
+    optimizer.update(model)
+
+    # Force a graph evaluation
+    mx.eval(model.parameters(), optimizer.state)
+    
+    print(f"Epoch {epoch}: Loss {loss:.3f}")
 
 
 fig = plt.figure()
@@ -113,7 +173,7 @@ t = np.ravel(ms_t).reshape(-1,1)
 
 pt_x = mx.array(x)
 pt_t = mx.array(t)
-pt_u = net(pt_x,pt_t)
+pt_u = model(pt_x,pt_t)
 u=pt_u.data.cpu().numpy()
 ms_u = u.reshape(ms_x.shape)
 
